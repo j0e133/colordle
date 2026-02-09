@@ -3,7 +3,6 @@ mod colors;
 
 use std::rc::Rc;
 
-// use eframe::egui;
 use egui::Color32;
 use rand::seq::IndexedRandom;
 
