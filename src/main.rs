@@ -3,14 +3,20 @@ mod colors;
 
 use std::rc::Rc;
 
-use egui::Color32;
+use egui::{Color32, Vec2};
 use rand::seq::IndexedRandom;
 
 use crate::colors::{Color, Palette};
 
 
 fn main() {
-    let native_options = eframe::NativeOptions::default();
+    let native_options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([600.0, 800.0])
+            .with_min_inner_size([550.0, 600.0]),
+        ..Default::default()
+    };
+
     let _ = eframe::run_native("My egui App", native_options, Box::new(|cc| Ok(Box::new(Colordle::new(cc)))));
 }
 
@@ -18,7 +24,17 @@ fn main() {
 #[derive(Default)]
 struct RenderColors{
     pub border: Color32,
-    pub center: Color32
+    pub center: Color32,
+    pub text: Color32
+}
+
+
+#[derive(Default)]
+enum Status {
+    #[default]
+    Playing,
+    Won,
+    Lost
 }
 
 
@@ -32,11 +48,16 @@ struct Guess {
 #[derive(Default)]
 struct Colordle {
     colors: Vec<Rc<Color>>,
+    render_colors: RenderColors,
+
     secret_color: Rc<Color>,
-    search_color: String,
+    guess_color: String,
     matched_color: Option<Rc<Color>>,
     guesses: Vec<Guess>,
-    render_colors: RenderColors
+    hint: String,
+
+    status: Status,
+    wins: usize
 }
 
 impl Colordle {
@@ -59,45 +80,36 @@ impl Colordle {
 
         let secret_color = colors.choose(&mut rand::rng()).unwrap().clone();
 
+        // let secret_color = colors[colors
+        //     .binary_search_by(|a| a.search_name.cmp(&"terrain".to_string()))
+        //     .ok().unwrap()].clone();
+
         println!("Secret {:?}", secret_color);
 
         Self {
             colors,
-            secret_color: secret_color.into(),
-            search_color: String::new(),
-            matched_color: None,
-            guesses: vec!(),
+            secret_color: secret_color,
             render_colors: RenderColors {
-                border: egui::Theme::Dark.default_visuals().window_fill.linear_multiply(1.4),
-                center: egui::Theme::Dark.default_visuals().window_fill.linear_multiply(1.6)
-            }
+                border: egui::Theme::Dark.default_visuals().window_fill.gamma_multiply(1.35),
+                center: egui::Theme::Dark.default_visuals().window_fill.gamma_multiply(1.7),
+                text: egui::Theme::Dark.default_visuals().text_color()
+            },
+            ..Default::default()
         }
     }
 
-    fn guess(&mut self, color: Rc<Color>) {
-        println!("Guessed {:?}", color);
+    fn labeled_rect(&self, ui: &mut egui::Ui, text: &str, color: Color32, text_color: Color32, height: f32, pad: f32) {
+        let center = ui.min_rect().center_bottom() + Vec2::new(0.0, height * 0.5);
+        let rect = egui::Rect::from_center_size(center, Vec2::new(475.0, height));
 
-        let similarity = self.secret_color.similarity(&color);
+        ui.add_space(5.0 + pad);
 
-        self.guesses.sort_by(|a, b| a.similarity.partial_cmp(&b.similarity).unwrap());
-
-        self.guesses.push(Guess {
-            color: color,
-            number: self.guesses.len() + 1,
-            similarity
-        });
-    }
-
-    fn labeled_rect(&self, ui: &mut egui::Ui, text: &str, color: Color32, text_color: Color32) {
-        let center = ui.min_rect().center_bottom() + egui::Vec2::new(0.0, 10.0);
-        let rect = egui::Rect::from_center_size(center, egui::Vec2::new(400.0, 30.0));
-        
         ui.painter().rect_filled(
             rect,
             5.0,
             self.render_colors.border
         );
-        
+
         ui.painter().rect_filled(
             rect.shrink(3.0),
             5.0,
@@ -108,6 +120,58 @@ impl Colordle {
             text_color,
             egui::RichText::new(text).heading()
         );
+
+        ui.add_space(5.0);
+    }
+
+    fn match_guess(&mut self) {
+        let search_color = self.guess_color.to_lowercase().replace(" ", "");
+
+        // match the color using binary search (fast)
+        self.matched_color = self.colors
+            .binary_search_by(|a| a.search_name.cmp(&search_color))
+            .ok()
+            .map(|i| Rc::clone(&self.colors[i]));
+    }
+
+    fn guess(&mut self, color: Rc<Color>) {
+        let similarity = self.secret_color.similarity(&color);
+
+        self.guesses.sort_by(|a, b| a.similarity.partial_cmp(&b.similarity).unwrap());
+
+        self.guesses.push(Guess {
+            color: color,
+            number: self.guesses.len() + 1,
+            similarity
+        });
+
+        if similarity >= 0.99995 {
+            if self.hint.len() != self.secret_color.name.len() {
+                self.status = Status::Won;
+
+                self.wins += 1;
+            }
+            else {
+                self.status = Status::Lost
+            }
+        }
+    }
+
+    fn get_hint(&mut self) {
+        match self.secret_color.name.chars().nth(self.hint.len()) {
+            Some(' ') => {
+                self.hint.push(' ');
+                self.get_hint();
+            },
+            Some(ch) => {
+                self.hint.push(ch);
+                self.guess_color = self.hint.clone();
+                self.match_guess();
+            }
+            None => {
+                self.status = Status::Lost;
+            }
+        }
     }
 }
 
@@ -117,61 +181,108 @@ impl eframe::App for Colordle {
             ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
                 ui.add_space(10.0);
                 ui.label(egui::RichText::new("Colordle").size(75.0).strong());
-                ui.add_space(75.0);
+                ui.add_space(52.0);
 
-                let center = ui.min_rect().center_bottom();
+                ui.allocate_ui(Vec2::new(ui.available_width(), 90.0), |ui| {
+                    let center = ui.min_rect().center_bottom() + Vec2::new(0.0, 23.0);
 
-                ui.painter().circle_filled(
-                    center,
-                    40.0,
-                    self.render_colors.border,
-                );
+                    ui.painter().circle_filled(
+                        center,
+                        40.0,
+                        self.render_colors.border,
+                    );
 
-                match &self.matched_color {
-                    Some(color) => {
-                        ui.painter().circle_filled(
-                            center,
-                            32.0,
-                            Color32::from_hex(&color.hex).unwrap(),
-                        );
-                    },
-                    None => {
-                        ui.painter().circle_filled(
-                            center,
-                            32.0,
-                            self.render_colors.center
-                        );
+                    match &self.matched_color {
+                        Some(color) => {
+                            ui.painter().circle_filled(
+                                center,
+                                32.0,
+                                Color32::from_hex(&color.hex).unwrap(),
+                            );
+                        },
+                        None => {
+                            ui.painter().circle_filled(
+                                center,
+                                32.0,
+                                self.render_colors.center
+                            );
+
+                            ui.painter().text(
+                                center,
+                                egui::Align2::CENTER_CENTER,
+                                "?",
+                                egui::FontId::new(40.0, egui::FontFamily::Proportional),
+                                self.render_colors.text
+                            );
+                        }
                     }
-                }
 
-                ui.add_space(90.0);
+                    ui.set_height(90.0);
+                });
 
-                let response = ui.add(egui::text_edit::TextEdit::singleline(&mut self.search_color)
-                    .hint_text("Guess a color")
-                    .horizontal_align(egui::Align::Center)
-                    .font(egui::TextStyle::Heading));
+                ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), 0.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add_space((ui.available_width() - 280.0) * 0.5);
 
-                // update color when text box is changed
-                if response.changed() {
-                    let search_color = self.search_color.to_lowercase().replace(" ", "");
+                    let response = ui.add(egui::text_edit::TextEdit::singleline(&mut self.guess_color)
+                        .hint_text("Guess a color")
+                        .horizontal_align(egui::Align::Center)
+                        .font(egui::TextStyle::Heading));
 
-                    // match the color using binary search (fast)
-                    self.matched_color = self.colors
-                        .binary_search_by(|a| a.search_name.cmp(&search_color))
-                        .ok()
-                        .map(|i| Rc::clone(&self.colors[i]));
-                }
-
-                // submit color
-                if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    if let Some(color) = &self.matched_color {
-                        self.guess(Rc::clone(color));
-
-                        self.search_color.clear();
+                    // update color when text box is changed
+                    if response.changed() {
+                        self.match_guess();
                     }
-                }
+
+                    // submit color
+                    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        if let Some(color) = &self.matched_color {
+                            self.guess(Rc::clone(color));
+
+                            self.guess_color.clear();
+                            self.hint.clear();
+                            self.match_guess();
+
+                            response.request_focus();
+                        }
+                    }
+
+                    if ui.button("?").on_hover_text("Hint").clicked() {
+                        self.get_hint();
+                    }
+                });
 
                 ui.add_space(20.0);
+
+                match self.status {
+                    Status::Won | Status::Lost => {
+                        ui.allocate_ui(Vec2::new(ui.available_width(), 90.0), |ui| {
+                            self.labeled_rect(
+                                ui,
+                                &format!("Congrats, you guessed the color in {} guess{}!", self.guesses.len(), if self.guesses.len() > 1 { "es" } else { "" }),
+                                self.render_colors.center,
+                                self.render_colors.text,
+                                90.0,
+                                10.0
+                            );
+
+                            ui.add_space(8.0);
+
+                            if ui.button(egui::RichText::new("Play again").heading()).clicked() {
+                                self.status = Status::Playing;
+
+                                self.secret_color = self.colors.choose(&mut rand::rng()).unwrap().clone();
+
+                                self.guesses.clear();
+                            }
+
+                            ui.add_space(20.0);
+                        });
+                    },
+                    Status::Lost => {
+
+                    },
+                    _ => {}
+                }
 
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for guess in self.guesses.iter().rev() {
@@ -180,22 +291,26 @@ impl eframe::App for Colordle {
                             &format!("#{} {} - {:.2}%", guess.number, guess.color.name, guess.similarity * 100.0),
                             Color32::from_hex(&guess.color.hex).unwrap(),
                             match guess.color.text_color {
-                                colors::TextColor::White => Color32::WHITE,
+                                colors::TextColor::White => self.render_colors.text,
                                 colors::TextColor::Black => Color32::BLACK,
                             },
+                            30.0,
+                            0.0
                         );
 
-                        ui.add_space(20.0);
+                        ui.add_space(10.0);
                     }
 
                     self.labeled_rect(
                         ui,
                         "#0 Guess!",
                         self.render_colors.center,
-                        Color32::WHITE
+                        self.render_colors.text,
+                        30.0,
+                        0.0
                     );
 
-                    ui.add_space(35.0);
+                    ui.add_space(10.0);
                 });
             });
         });

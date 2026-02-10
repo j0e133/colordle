@@ -1,4 +1,6 @@
 
+use core::f32;
+
 use reqwest;
 use serde::Deserialize;
 
@@ -70,6 +72,20 @@ pub struct Color {
 }
 
 impl Color {
+    // pub fn similarity(&self, other: &Self) -> f32 {
+    //     let dl = 2.0 * (self.l - other.l);
+    //     let dc = (self.a * self.a + self.b + self.b).sqrt() - (other.a * other.a + other.b + other.b).sqrt();
+    //     let dh_ = self.b.atan2(self.a) - other.b.atan2(other.a);
+    //     let dh = if dh_ > f32::consts::PI { f32::consts::TAU - dh_ } else { dh_ };
+
+    //     println!("{self:?}, {other:?}");
+    //     println!("{}, {}, {}", other.l * 2.0 - 1.0, (other.a * other.a + other.b + other.b).sqrt(), other.b.atan2(other.a));
+
+    //     let dist = (dl * dl + dc * dc + dh * dh).sqrt();
+
+    //     1.0 - dist
+    // }
+    
     pub fn similarity(&self, other: &Self) -> f32 {
         let dl = self.l - other.l;
         let da = self.a - other.a;
