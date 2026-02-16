@@ -1,6 +1,8 @@
 
 use core::f32;
+use std::rc::Rc;
 
+use rand::seq::IndexedRandom;
 use reqwest;
 use serde::Deserialize;
 
@@ -14,13 +16,13 @@ pub enum TextColor {
 
 
 #[derive(Debug, Deserialize)]
-pub struct Palette {
+struct JsonPalette {
     pub colors: Vec<RawColor>
 }
 
-impl Palette {
-    pub fn load() -> Option<Self> {
-        let response = reqwest::blocking::get("https://api.color.pizza/v1/").ok()?;
+impl JsonPalette {
+    fn load(name: &str) -> Option<Self> {
+        let response = reqwest::blocking::get(format!("https://api.color.pizza/v1/?list={name}")).ok()?;
 
         let palette: Self = response.json().ok()?;
 
@@ -29,8 +31,87 @@ impl Palette {
 }
 
 
+#[derive(Debug, Default)]
+pub struct Palette {
+    colors: Vec<Rc<Color>>
+}
+
+impl Palette {
+    fn load(name: &str) -> Option<Self> {
+        let raw = JsonPalette::load(name)?;
+        
+        let mut colors: Vec<Rc<Color>> = raw
+            .colors
+            .into_iter()
+            .map(|raw| Rc::new(raw.color()))
+            .collect();
+
+        colors.sort_by(|a, b| a.search_name.cmp(&b.search_name));
+
+        Some(Self { colors })
+    }
+
+    fn load_child(&self, name: &str) -> Option<Self> {
+        let raw = JsonPalette::load(name)?;
+
+        print!("{name}, {}, ", raw.colors.len());
+        
+        let mut colors: Vec<Rc<Color>> = raw
+            .colors
+            .into_iter()
+            .filter_map(|col| self.match_name(&col.name)) // discard all non-standard colors
+            .collect();
+
+        println!("{}", colors.len());
+
+        colors.sort_by(|a, b| a.search_name.cmp(&b.search_name));
+
+        Some(Self { colors })
+    }
+
+    pub fn random(&self) -> Rc<Color> {
+        Rc::clone(self.colors.choose(&mut rand::rng()).unwrap())
+    }
+
+    pub fn match_name(&self, name: &String) -> Option<Rc<Color>> {
+        let match_name = &name.to_lowercase().replace(" ", "");
+
+        // match the color using binary search (fast)
+        self.colors
+            .binary_search_by(|a| a.search_name.cmp(match_name))
+            .ok()
+            .map(|i| Rc::clone(&self.colors[i]))
+    }
+}
+
+
+#[derive(Debug, Default)]
+pub struct Palettes {
+    pub all: Palette,
+    pub basic: Palette,
+    pub advanced: Palette,
+    pub wikipedia: Palette
+}
+
+impl Palettes {
+    pub fn new() -> Option<Self> {
+        let all = Palette::load("default")?;
+        let basic = all.load_child("mlmc_english")?;
+        let advanced = all.load_child("bestOf")?;
+        let wikipedia = all.load_child("wikipedia")?;
+
+        Some(Self {
+            all,
+            basic,
+            advanced,
+            wikipedia
+        })
+    }
+}
+
+
 #[derive(Debug, Deserialize)]
-pub struct RawColor {
+struct RawColor {
     pub name: String,
     pub hex: String,
     pub rgb: RGB,
@@ -38,7 +119,7 @@ pub struct RawColor {
 }
 
 impl RawColor {
-    pub fn color(self) -> Color {
+    fn color(self) -> Color {
         let search_name = self.name.to_lowercase().replace(" ", "");
         let (l, a, b) = self.rgb.to_oklab();
         let text_color = match self.bestContrast.as_str() {
@@ -51,9 +132,9 @@ impl RawColor {
             name: self.name,
             search_name: search_name,
             hex: self.hex,
-            l,
-            a,
-            b,
+            l: smoothstep((l * 10_000.0).round() / 10_000.0), // smoothstep cause the extreme lightness ones are too far apart
+            a: (a * 10_000.0).round() / 10_000.0,
+            b: (b * 10_000.0).round() / 10_000.0,
             text_color
         }
     }
@@ -72,28 +153,20 @@ pub struct Color {
 }
 
 impl Color {
-    // pub fn similarity(&self, other: &Self) -> f32 {
-    //     let dl = 2.0 * (self.l - other.l);
-    //     let dc = (self.a * self.a + self.b + self.b).sqrt() - (other.a * other.a + other.b + other.b).sqrt();
-    //     let dh_ = self.b.atan2(self.a) - other.b.atan2(other.a);
-    //     let dh = if dh_ > f32::consts::PI { f32::consts::TAU - dh_ } else { dh_ };
+    fn c(&self) -> f32 {
+        (self.a * self.a + self.b * self.b).sqrt()
+    }
 
-    //     println!("{self:?}, {other:?}");
-    //     println!("{}, {}, {}", other.l * 2.0 - 1.0, (other.a * other.a + other.b + other.b).sqrt(), other.b.atan2(other.a));
-
-    //     let dist = (dl * dl + dc * dc + dh * dh).sqrt();
-
-    //     1.0 - dist
-    // }
-    
     pub fn similarity(&self, other: &Self) -> f32 {
-        let dl = self.l - other.l;
-        let da = self.a - other.a;
-        let db = self.b - other.b;
-        
-        let dist = (dl * dl + da * da + db * db).sqrt();
+        let sim_light = 1.0 - (self.l - other.l).abs();
 
-        1.0 - dist
+        let d_a = self.a - other.a;
+        let d_b = self.b - other.b;
+        let sim_col = 1.0 - (d_a * d_a + d_b * d_b).sqrt();
+
+        let col_factor = (self.c() + other.c()).cbrt() * 2.0_f32.cbrt().recip() * 2.0;
+
+        (sim_col * col_factor + sim_light) / (col_factor + 1.0)
     }
 }
 
@@ -113,7 +186,7 @@ impl RGB {
         }
     }
 
-    pub fn to_oklab(&self) -> (f32, f32, f32) {
+    fn to_oklab(&self) -> (f32, f32, f32) {
         let (r, g, b) = (
             Self::linearize(self.r / 255.0),
             Self::linearize(self.g / 255.0),
@@ -140,4 +213,9 @@ impl RGB {
 
         (l, a, b)
     }
+}
+
+
+fn smoothstep(x: f32) -> f32 {
+    (3.0 - 2.0 * x) * x * x
 }

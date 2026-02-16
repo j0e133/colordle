@@ -4,9 +4,8 @@ mod colors;
 use std::rc::Rc;
 
 use egui::{Color32, Vec2};
-use rand::seq::IndexedRandom;
 
-use crate::colors::{Color, Palette};
+use crate::colors::{Color, Palettes};
 
 
 fn main() {
@@ -33,9 +32,27 @@ struct RenderColors{
 enum Status {
     #[default]
     Playing,
+    SelectMode,
     Won,
     Lost
 }
+
+
+#[derive(Default)]
+enum Palette {
+    #[default]
+    Basic,
+    Advanced,
+    All,
+    Wikipedia
+}
+
+#[derive(Default)]
+enum SimilarityMode {
+    #[default]
+    Standard,
+    Easy
+} 
 
 
 struct Guess {
@@ -47,9 +64,11 @@ struct Guess {
 
 #[derive(Default)]
 struct Colordle {
-    colors: Vec<Rc<Color>>,
+    palettes: Palettes,
     render_colors: RenderColors,
 
+    current_palette: Palette,
+    similarity_mode: SimilarityMode,
     secret_color: Rc<Color>,
     guess_color: String,
     matched_color: Option<Rc<Color>>,
@@ -69,26 +88,13 @@ impl Colordle {
 
         cc.egui_ctx.set_theme(egui::Theme::Dark);
 
-        let palette = Palette::load().unwrap();
-        let mut colors: Vec<Rc<Color>> = palette
-            .colors
-            .into_iter()
-            .map(|raw| raw.color().into())
-            .collect();
+        let palettes = Palettes::new().unwrap();
 
-        colors.sort_by(|a, b| a.search_name.cmp(&b.search_name));
-
-        let secret_color = colors.choose(&mut rand::rng()).unwrap().clone();
-
-        // let secret_color = colors[colors
-        //     .binary_search_by(|a| a.search_name.cmp(&"terrain".to_string()))
-        //     .ok().unwrap()].clone();
-
-        println!("Secret {:?}", secret_color);
+        let secret_color = palettes.basic.random();
 
         Self {
-            colors,
-            secret_color: secret_color,
+            palettes,
+            secret_color,
             render_colors: RenderColors {
                 border: egui::Theme::Dark.default_visuals().window_fill.gamma_multiply(1.35),
                 center: egui::Theme::Dark.default_visuals().window_fill.gamma_multiply(1.7),
@@ -124,14 +130,17 @@ impl Colordle {
         ui.add_space(5.0);
     }
 
-    fn match_guess(&mut self) {
-        let search_color = self.guess_color.to_lowercase().replace(" ", "");
+    fn randomize_color(&mut self) {
+        self.secret_color = match self.current_palette {
+            Palette::Basic     => self.palettes.basic.random(),
+            Palette::Advanced  => self.palettes.advanced.random(),
+            Palette::All       => self.palettes.all.random(),
+            Palette::Wikipedia => self.palettes.wikipedia.random()
+        };
+    }
 
-        // match the color using binary search (fast)
-        self.matched_color = self.colors
-            .binary_search_by(|a| a.search_name.cmp(&search_color))
-            .ok()
-            .map(|i| Rc::clone(&self.colors[i]));
+    fn match_guess(&mut self) {
+        self.matched_color = self.palettes.all.match_name(&self.guess_color);
     }
 
     fn guess(&mut self, color: Rc<Color>) {
@@ -270,8 +279,7 @@ impl eframe::App for Colordle {
                             if ui.button(egui::RichText::new("Play again").heading()).clicked() {
                                 self.status = Status::Playing;
 
-                                self.secret_color = self.colors.choose(&mut rand::rng()).unwrap().clone();
-
+                                self.randomize_color();
                                 self.guesses.clear();
                             }
 
@@ -286,9 +294,14 @@ impl eframe::App for Colordle {
 
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for guess in self.guesses.iter().rev() {
+                        let text = match self.similarity_mode {
+                            SimilarityMode::Standard => &format!("#{} {} - {:.2}%", guess.number, guess.color.name, guess.similarity * 100.0),
+                            SimilarityMode::Easy => &format!("#{} {} - Brightness {:.2}%, Color {:.2}%", guess.number, guess.color.name, guess.similarity * 100.0, 0.0),
+                        };
+
                         self.labeled_rect(
                             ui,
-                            &format!("#{} {} - {:.2}%", guess.number, guess.color.name, guess.similarity * 100.0),
+                            text,
                             Color32::from_hex(&guess.color.hex).unwrap(),
                             match guess.color.text_color {
                                 colors::TextColor::White => self.render_colors.text,
