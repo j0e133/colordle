@@ -53,16 +53,12 @@ impl Palette {
 
     fn load_child(&self, name: &str) -> Option<Self> {
         let raw = JsonPalette::load(name)?;
-
-        print!("{name}, {}, ", raw.colors.len());
         
         let mut colors: Vec<Rc<Color>> = raw
             .colors
             .into_iter()
             .filter_map(|col| self.match_name(&col.name)) // discard all non-standard colors
             .collect();
-
-        println!("{}", colors.len());
 
         colors.sort_by(|a, b| a.search_name.cmp(&b.search_name));
 
@@ -125,7 +121,7 @@ impl RawColor {
         let text_color = match self.bestContrast.as_str() {
             "white" => TextColor::White,
             "black" => TextColor::Black,
-            other => panic!("Invalid contrast: {other}")
+            other => panic!("Invalid bestContrast: {other}")
         };
         
         Color {
@@ -153,20 +149,43 @@ pub struct Color {
 }
 
 impl Color {
-    fn c(&self) -> f32 {
-        (self.a * self.a + self.b * self.b).sqrt()
+    fn saturation(&self) -> f32 {
+        (self.a * self.a + self.b * self.b).cbrt()
     }
 
-    pub fn similarity(&self, other: &Self) -> f32 {
+    fn dist(&self, other: &Self) -> f32 {
+        let d_l = self.l - other.l;
+        let d_a = self.a - other.a;
+        let d_b = self.b - other.b;
+
+        (d_l * d_l + d_a * d_a + d_b * d_b).sqrt()
+    }
+
+    pub fn similarity_old(&self, other: &Self) -> f32 {
         let sim_light = 1.0 - (self.l - other.l).abs();
 
         let d_a = self.a - other.a;
         let d_b = self.b - other.b;
         let sim_col = 1.0 - (d_a * d_a + d_b * d_b).sqrt();
 
-        let col_factor = (self.c() + other.c()).cbrt() * 2.0_f32.cbrt().recip() * 2.0;
+        let sat1 = self.saturation();
+        let sat2 = other.saturation();
 
-        (sim_col * col_factor + sim_light) / (col_factor + 1.0)
+        let sat_scale = (sat1 + sat2 + 1.0).log(3.0) * 2.0;
+
+        println!("{}: {}", self.name, sat1);
+        println!("{}: {}", other.name, sat2);
+        println!("{}, {}, {}", sim_col, sim_light, sat_scale);
+
+        (sim_col * sat_scale + sim_light) / (sat_scale + 1.0)
+    }
+
+    pub fn similarity(&self, other: &Self) -> f32 {
+
+        let dist = self.dist(other);
+        let sat = 1.0 - (self.saturation() - other.saturation()).abs() * 0.75;
+
+        1.0 - dist * sat
     }
 }
 
